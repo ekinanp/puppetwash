@@ -5,31 +5,6 @@ require 'puppetdb'
 require 'json'
 require 'yaml'
 
-def config
-  YAML.load_file("#{ENV['HOME']}/.puppetwash.yaml")
-end
-
-def client(pe_name)
-  conf = config[pe_name]
-  if conf['rbac_token']
-    # PE token-based auth
-    PuppetDB::Client.new({
-      server: conf['puppetdb_url'],
-      token:  conf['rbac_token'],
-      cacert: conf['cacert']
-    })
-  else
-    # Cert-based auth
-    PuppetDB::Client.new({
-      server: conf['puppetdb_url'],
-      pem: {
-        'ca_file' => conf['cacert'],
-        'key'     => conf['key'],
-        'cert'    => conf['cert']
-      }
-    })
-  end
-end
 
 def make_readable(value)
   if value.kind_of? String
@@ -39,22 +14,55 @@ def make_readable(value)
   end
 end
 
-class Puppetwash < Wash::Entry
+# Entry is a wrapper to Wash::Entry that persists
+# the config so that the client can be recreated
+#
+# TODO: Store the instance-specific config instead.
+# If this becomes a common-enough pattern, maybe
+# have some way for core Wash to store this info?
+class Entry < Wash::Entry
+  state :config
+
+  def client(pe_name)
+    conf = @config[pe_name]
+    if conf['rbac_token']
+      # PE token-based auth
+      PuppetDB::Client.new({
+        server: conf['puppetdb_url'],
+        token:  conf['rbac_token'],
+        cacert: conf['cacert']
+      })
+    else
+      # Cert-based auth
+      PuppetDB::Client.new({
+        server: conf['puppetdb_url'],
+        pem: {
+          'ca_file' => conf['cacert'],
+          'key'     => conf['key'],
+          'cert'    => conf['cert']
+        }
+      })
+    end
+  end
+end
+
+class Puppetwash < Entry
   label 'puppet'
   is_singleton
   parent_of 'PEInstance'
 
-  def init(_wash_config)
+  def init(config)
+    @config = config
   end
 
   def list
-    config.keys.map do |name|
+    @config.keys.map do |name|
        PEInstance.new(name)
     end
   end
 end
 
-class PEInstance < Wash::Entry
+class PEInstance < Entry
   label 'pe_instance'
   parent_of 'NodesDir'
 
@@ -67,7 +75,7 @@ class PEInstance < Wash::Entry
   end
 end
 
-class NodesDir < Wash::Entry
+class NodesDir < Entry
   label 'nodes_dir'
   is_singleton
   parent_of 'Node'
@@ -86,7 +94,7 @@ class NodesDir < Wash::Entry
   end
 end
 
-class Node < Wash::Entry
+class Node < Entry
   label 'node'
   parent_of 'Catalog', 'FactsDir', 'ReportsDir'
   state :pe_name
@@ -107,7 +115,7 @@ class Node < Wash::Entry
   end
 end
 
-class Catalog < Wash::Entry
+class Catalog < Entry
   label 'catalog'
   is_singleton
   state :node_name, :pe_name
@@ -124,7 +132,7 @@ class Catalog < Wash::Entry
   end
 end
 
-class FactsDir < Wash::Entry
+class FactsDir < Entry
   label 'facts_dir'
   is_singleton
   parent_of 'Fact'
@@ -147,7 +155,7 @@ class FactsDir < Wash::Entry
   end
 end
 
-class Fact < Wash::Entry
+class Fact < Entry
   label 'fact'
   state :node_name, :pe_name
 
@@ -175,7 +183,7 @@ METADATA_FIELDS = {
   'hash': 'string'
 }
 
-class ReportsDir < Wash::Entry
+class ReportsDir < Entry
   label 'reports_dir'
   is_singleton
   parent_of 'Report'
@@ -200,7 +208,7 @@ class ReportsDir < Wash::Entry
   end
 end
 
-class Report < Wash::Entry
+class Report < Entry
   label 'report'
   attributes :mtime
   partial_metadata_schema(
